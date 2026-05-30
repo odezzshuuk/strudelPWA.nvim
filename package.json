@@ -1,0 +1,23 @@
+{
+  "name": "strudel.nvim",
+  "version": "1.0.0",
+  "description": "Launch and control Strudel from Neovim",
+  "main": "js/launch.js",
+  "dependencies": {
+    "puppeteer": "^22.4.1"
+  },
+  "author": {
+    "name": "odezshog"
+  },
+  "keywords": [
+    "editor",
+    "neovim",
+    "live",
+    "strudel",
+    "coding",
+    "livecoding",
+    "algorave",
+    "plugin"
+  ],
+  "license": "AGPL-3.0"
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "diagnostics": {
+    "groupFileStatus": {
+      "strict": "Opened",
+      "strong": "Opened"
+    },
+    "groupSeverity": {
+      "strong": "Warning",
+      "strict": "Warning"
+    },
+    "unusedLocalExclude": [ "_*" ]
+  },
+
+  "workspace.checkThirdParty": false,
+  "runtime.version": "LuaJIT",
+  "workspace.library": [
+    "$VIMRUNTIME/lua"
+  ]
+}
