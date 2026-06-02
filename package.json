@@ -1,10 +1,11 @@
 {
   "name": "strudel.nvim",
   "version": "1.0.0",
-  "description": "Launch and control Strudel from Neovim",
-  "main": "js/launch.js",
+  "description": "Launch and control Strudel PWA from Neovim",
+  "main": "ts/attach.ts",
+  "type": "module",
   "dependencies": {
-    "puppeteer": "^22.4.1"
+    "playwright": "^1.60.0"
   },
   "author": {
     "name": "odezshog"
@@ -19,5 +20,9 @@
     "algorave",
     "plugin"
   ],
-  "license": "AGPL-3.0"
+  "license": "AGPL-3.0",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
+  }
 }

@@ -14,7 +14,7 @@ local MESSAGES = {
   EVAL_ERROR = "STRUDEL_EVAL_ERROR:",
 }
 
-local STRUDEL_SYNC_AUTOCOMMAND = "StrudelSync" local SUCCESSIVE_CMD_DELAY = 50
+local STRUDEL_SYNC_AUTOCOMMAND = "StrudelPWASync" local SUCCESSIVE_CMD_DELAY = 50
 
 -- State
 local strudel_job_id = nil
@@ -46,6 +46,7 @@ local config = {
   browser_data_dir = nil,
   browser_exec_path = nil,
   strudel_url = nil,
+  log_level = "INFO",
 }
 
 local function send_message(message)
@@ -166,6 +167,10 @@ local function handle_event(full_data)
         vim.notify("Strudel Error: " .. error, vim.log.levels.ERROR)
       end)
     end
+  else
+    vim.schedule(function()
+      vim.notify(full_data, vim.log.levels.WARN)
+    end)
   end
 end
 
@@ -232,7 +237,7 @@ function M.launch()
   end
 
   local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
-  local launch_script = plugin_root .. "/js/launch.js"
+  local launch_script = plugin_root .. "/ts/attach.ts"
   local cmd = "node " .. vim.fn.shellescape(launch_script)
 
   if config.ui.hide_top_bar then
@@ -256,14 +261,11 @@ function M.launch()
   if config.headless then
     cmd = cmd .. " --headless"
   end
-  if config.browser_data_dir then
-    cmd = cmd .. " --user-data-dir=" .. vim.fn.shellescape(config.browser_data_dir)
-  end
   if config.browser_exec_path then
     cmd = cmd .. " --browser-exec-path=" .. vim.fn.shellescape(config.browser_exec_path)
   end
-  if config.strudel_url then
-    cmd = cmd .. " --strudel-url=" .. vim.fn.shellescape(config.strudel_url)
+  if config.log_level then
+    cmd = cmd .. " --log-level=" .. vim.fn.shellescape(config.log_level)
   end
 
   -- Run the js script

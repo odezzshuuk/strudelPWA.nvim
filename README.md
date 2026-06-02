@@ -26,7 +26,7 @@ This plugin launches Strudel in a browser window and provides real-time two-way 
 - **Headless mode** - Optionally launch Strudel without opening the Strudel browser window for a pure Neovim live coding experience.
 - **Session persistence & offline** - Remembers browser state across sessions, which also means you can use it [offline](https://strudel.cc/learn/pwa/).
 
-It uses [Puppeteer](https://github.com/puppeteer/puppeteer) to control a real browser instance allowing you to write Strudel code from Neovim (your favorite text editor) with all your regular config and plugins.
+It launches the local Strudel PWA desktop command when available, then uses [Playwright](https://playwright.dev/) over Chromium CDP to control that window while keeping the same Neovim sync workflow.
 
 Check out the [Strudel documentation](https://strudel.cc/learn) to learn about the language.
 
@@ -121,6 +121,10 @@ require("strudel").setup({
   -- Path to a (chromium-based) browser executable of choice
   -- (optional, default: nil)
   browser_exec_path = "/path/to/browser/executable",
+  -- Minimum log level written to ~/.cache/strudelPWA-nvim/runtime.log
+  -- Valid values: "DEBUG", "INFO", "ERROR"
+  -- (optional, default: "INFO")
+  log_level = "INFO",
   -- Custom URL for Strudel
   -- (optional, default: "https://cold.strudel.cc/")
   strudel_url = "https://cold.strudel.cc/",
@@ -187,7 +191,7 @@ vim.keymap.set("n", "<leader>sx", strudel.execute, { desc = "Strudel set current
 The plugin consists of two main components:
 
 1. Lua Module (`lua/strudel/init.lua`) - Handles Neovim integration, buffer management, and remote communication with the JavaScript process.
-2. JavaScript Process (`js/launch.js`) - Uses Puppeteer to control the browser, receives and sends commands, and interact with the Strudel web application.
+2. JavaScript Process (`ts/attach.ts`) - Launches the local Strudel PWA/browser process, attaches to it over Playwright CDP, receives and sends commands, and interacts with the Strudel web application.
 
 ### Communication Protocol
 
@@ -216,7 +220,7 @@ Note on Loop Prevention - Base64 content comparison prevents infinite update loo
 
 - Browser doesn't open - Ensure Node.js and npm are properly installed.
 - Permission errors - Ensure write permissions to the cache directory.
-- Puppeteer error (`Cannot find module 'puppeteer'`) - see https://github.com/gruvw/strudel.nvim/issues/9.
+- Browser attach error - ensure a local Strudel PWA is installed or set `browser_exec_path` to a Chromium-based browser executable.
 - Whole buffer content gets highlighted - Probably caused by the [highlight-undo.nvim](https://github.com/tzachar/highlight-undo.nvim) plugin. Use the following config:
 ```lua
 require("highlight-undo").setup({
@@ -234,5 +238,5 @@ This project would not be possible without the wonderful technologies below:
 
 - [Strudel](https://strudel.cc/) - Web-based environment for live coding algorithmic patterns.
 - [Hydra](https://github.com/hydra-synth/hydra) - Livecoding networked visuals in the browser.
-- [Puppeteer](https://pptr.dev/) - Browser automation library and JavaScript API for Chrome and Firefox.
+- [Playwright](https://playwright.dev/) - Browser automation library used here to attach to the launched Chromium/PWA window over CDP.
 - [Neovim](https://neovim.io/) - Vim-fork focused on extensibility and usability.

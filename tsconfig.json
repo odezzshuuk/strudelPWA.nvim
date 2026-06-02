@@ -1,0 +1,9 @@
+{
+   "compilerOptions": {
+     "types": [ "node" ],
+     "module": "nodenext",
+     "moduleResolution": "nodenext",
+     "allowImportingTsExtensions": true,
+     "noEmit": true
+   }
+}
