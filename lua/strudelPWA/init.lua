@@ -1,4 +1,4 @@
-local base64 = require("strudel.base64")
+local base64 = require("strudelPWA.base64")
 
 local M = {}
 
