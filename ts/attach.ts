@@ -484,7 +484,6 @@ function expandTilde(p: string | undefined): string | undefined {
 
         const pwaCommand = await getLocalPWACommand();
         let freePort = await GetFreePort();
-        // let freePort = 9896
         let spwOpts: { stdio: ("ignore" | "pipe" | "inherit" | number )[] } = { stdio: ["pipe", "pipe", 1] };
 
         // user data is necessary
@@ -502,7 +501,7 @@ function expandTilde(p: string | undefined): string | undefined {
                 `--user-data-dir=${Options.userDataDir}`,
                 `--remote-debugging-port=${freePort}`,
                 "--autoplay-policy=no-user-gesture-required",
-                "--disable--infobars",
+                "--disable-infobars",
             ], spwOpts);
 
             browser = await chromium.connectOverCDP("http://localhost:" + freePort);
@@ -541,7 +540,7 @@ function expandTilde(p: string | undefined): string | undefined {
                 "--app-id=camedmhajlokcgipjhegkdobhmafconk",
                 `--remote-debugging-port=${freePort}`,
                 "--autoplay-policy=no-user-gesture-required",
-                "--disable--infobars",
+                "--disable-infobars",
             ], spwOpts);
 
             browser = await chromium.connectOverCDP("http://localhost:" + freePort);
