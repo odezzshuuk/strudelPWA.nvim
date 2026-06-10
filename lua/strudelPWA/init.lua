@@ -232,7 +232,7 @@ end
 
 function M.launch()
   if strudel_job_id ~= nil then
-    vim.notify("Strudel is already running, run :StrudelQuit to quit.", vim.log.levels.ERROR)
+    vim.notify("Strudel is already running, run :StrudelQuit to quit.", vim.log.levels.WARN)
     return
   end
 

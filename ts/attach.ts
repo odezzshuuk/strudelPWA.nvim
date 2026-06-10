@@ -1,8 +1,11 @@
 import fs from "fs/promises";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import path from "path";
 import os from "os";
+import { spawn, type ChildProcess } from "child_process";
 import { logger } from "./logger.ts";
+import { Options } from "./settings.ts"
+import { GetFreePort } from "./utils.ts";
 
 declare global {
     interface Window {
@@ -29,19 +32,6 @@ process.stderr.on("error", (err) => {
 
 const STRUDEL_URL = "https://strudel.cc/";
 const USER_DATA_DIR = path.join(os.homedir(), ".cache", "strudel-nvim");
-
-type UserConfig = {
-    hideTopBar: boolean;
-    maximiseMenuPanel: boolean;
-    hideMenuPanel: boolean;
-    hideCodeEditor: boolean;
-    hideErrorDisplay: boolean;
-    customCss: string | undefined;
-    isHeadless: boolean;
-    userDataDir: string | undefined;
-    browserExecPath: string | undefined;
-    // strudelUrl: string,
-};
 
 
 type LocalPWACommand = {
@@ -130,54 +120,42 @@ const CLI_ARGS = {
     BROWSER_EXEC_PATH: "--browser-exec-path=",
 };
 
-const cliOptions: UserConfig = {
-    hideTopBar: false,
-    maximiseMenuPanel: false,
-    hideMenuPanel: false,
-    hideCodeEditor: false,
-    hideErrorDisplay: false,
-    customCss: undefined,
-    isHeadless: false,
-    userDataDir: USER_DATA_DIR,
-    browserExecPath: undefined,
-};
-
 for (const arg of process.argv) {
     if (arg === CLI_ARGS.HIDE_TOP_BAR) {
-        cliOptions.hideTopBar = true;
+        Options.hideTopBar = true;
     } else if (arg === CLI_ARGS.MAXIMISE_MENU_PANEL) {
-        cliOptions.maximiseMenuPanel = true;
+        Options.maximiseMenuPanel = true;
     } else if (arg === CLI_ARGS.HIDE_MENU_PANEL) {
-        cliOptions.hideMenuPanel = true;
+        Options.hideMenuPanel = true;
     } else if (arg === CLI_ARGS.HIDE_CODE_EDITOR) {
-        cliOptions.hideCodeEditor = true;
+        Options.hideCodeEditor = true;
     } else if (arg === CLI_ARGS.HIDE_ERROR_DISPLAY) {
-        cliOptions.hideErrorDisplay = true;
+        Options.hideErrorDisplay = true;
     } else if (arg.startsWith(CLI_ARGS.CUSTOM_CSS_B64)) {
         const b64 = arg.slice(CLI_ARGS.CUSTOM_CSS_B64.length);
         try {
-            cliOptions.customCss = Buffer.from(b64, "base64").toString("utf8");
+            Options.customCss = Buffer.from(b64, "base64").toString("utf8");
         } catch (e) {
             void logger.error("Failed to decode custom CSS", e);
         }
     } else if (arg === CLI_ARGS.HEADLESS) {
-        cliOptions.isHeadless = true;
+        Options.isHeadless = true;
     } else if (arg.startsWith(CLI_ARGS.USER_DATA_DIR)) {
-        cliOptions.userDataDir = arg.slice(CLI_ARGS.USER_DATA_DIR.length);
+        Options.userDataDir = arg.slice(CLI_ARGS.USER_DATA_DIR.length);
     } else if (arg.startsWith(CLI_ARGS.BROWSER_EXEC_PATH)) {
-        cliOptions.browserExecPath = arg.slice(CLI_ARGS.BROWSER_EXEC_PATH.length);
+        Options.browserExecPath = arg.slice(CLI_ARGS.BROWSER_EXEC_PATH.length);
     }
 }
 
-cliOptions.browserExecPath = expandTilde(cliOptions.browserExecPath);
+Options.browserExecPath = expandTilde(Options.browserExecPath);
 
 let page: Page | undefined;
 let lastContent: string;
+let browser: Browser;
 let browserCtx: BrowserContext;
-let ctxArgs: string[] = [
-    "--autoplay-policy=no-user-gesture-required",
-    "--disable--infobars",
-];
+
+// let childProcessArgs: string[] = [
+// ];
 let isShuttingDown = false;
 
 const eventQueue: string[] = [];
@@ -197,10 +175,6 @@ function describeMessage(message: string | undefined) {
         return `STRUDEL_EVAL_ERROR (${message.length - MESSAGES.EVAL_ERROR.length} bytes)`;
     }
     return message;
-}
-
-function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function splitCommandLine(command: string): string[] {
@@ -506,40 +480,36 @@ function expandTilde(p: string | undefined): string | undefined {
 
 (async () => {
     try {
-        void logger.info("Starting attach runtime", `LogFile: ${logger.path}`);
         process.stdout.write(`Log write to file: ${logger.path.replace(os.homedir(), "~")}\n`);
 
         const pwaCommand = await getLocalPWACommand();
-
-        let ignoreDefaultArgs = [
-            "--mute-audio",
-            "--enable-automation",
-            "--no-sandbox",
-        ];
+        let freePort = await GetFreePort();
+        // let freePort = 9896
+        let spwOpts: { stdio: ("ignore" | "pipe" | "inherit" | number )[] } = { stdio: ["pipe", "pipe", 1] };
 
         // user data is necessary
         if (
             !pwaCommand ||
             !("--user-data-dir" in pwaCommand.args) ||
-            pwaCommand.args["--user-data-dir"] !== cliOptions.userDataDir
+            pwaCommand.args["--user-data-dir"] !== Options.userDataDir
 
         ) {
-            void logger.info(
-                "PWA not installed or not installed at given user-data-dir",
-            );
+            void logger.info( "PWA not installed or not installed at given user-data-dir",);
+            process.stdout.write("Strudel not locally installed, launching from browser\n");
 
-            browserCtx = await chromium.launchPersistentContext(
-                cliOptions.userDataDir || USER_DATA_DIR,
-                {
-                    headless: cliOptions.isHeadless,
-                    executablePath: cliOptions.browserExecPath || "chrome",
-                    args: ctxArgs,
-                    ignoreDefaultArgs: ignoreDefaultArgs,
-                },
-            );
+            spawn(Options.browserExecPath || "chrome", [
+                "--profile-directory=Default",
+                `--user-data-dir=${Options.userDataDir}`,
+                `--remote-debugging-port=${freePort}`,
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable--infobars",
+            ], spwOpts);
+
+            browser = await chromium.connectOverCDP("http://localhost:" + freePort);
+            browserCtx = browser.contexts()[0];
+
             // check url of every pages if it contains strudel.cc, if yes reuse it and close others
             let reuse = false;
-            void logger.debug("pages count", browserCtx.pages().length);
             for (const pg of browserCtx.pages()) {
                 const url = pg.url();
                 if (url.includes("strudel.cc")) {
@@ -554,32 +524,28 @@ function expandTilde(p: string | undefined): string | undefined {
                     break;
                 }
             }
-            void logger.debug("pages count", browserCtx.pages().length);
+
             if (!reuse) {
                 page = browserCtx.pages()[0];
                 await page.goto(STRUDEL_URL);
             }
         } else {
             void logger.info("Launch from PWA");
+            void logger.info("PWA executable: ", pwaCommand.executable);
+            void logger.info("PWA args:", Object.entries(pwaCommand.args).map(([key, value]) => `${key}=${value}`))
 
-            for (const opt in pwaCommand.args) {
-                if (opt === "--user-data-dir") {
-                    continue;
-                } else {
-                    ctxArgs.push(`${opt}=${pwaCommand.args[opt]}`);
-                }
-            }
+            spawn(pwaCommand.executable, [
+                // ...pwaCommand.args && Object.entries(pwaCommand.args).map(([key, value]) => `${key}=${value}`),
+                "--user-data-dir=/home/odezzshog/.cache/strudelPWA-nvim",
+                "--profile-directory=Default",
+                "--app-id=camedmhajlokcgipjhegkdobhmafconk",
+                `--remote-debugging-port=${freePort}`,
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable--infobars",
+            ], spwOpts);
 
-            browserCtx = await chromium.launchPersistentContext(
-                cliOptions.userDataDir || USER_DATA_DIR,
-                {
-                    headless: cliOptions.isHeadless,
-                    executablePath: cliOptions.browserExecPath || "chrome",
-                    args: ctxArgs,
-                    ignoreDefaultArgs: ignoreDefaultArgs,
-                },
-            );
-
+            browser = await chromium.connectOverCDP("http://localhost:" + freePort);
+            browserCtx = browser.contexts()[0];
             page = browserCtx.pages()[0];
         }
 
@@ -599,28 +565,28 @@ function expandTilde(p: string | undefined): string | undefined {
             }
         });
 
-        await page.addStyleTag({ content: STYLES.HIDE_EDITOR_SCROLLBAR });
-        await page.addStyleTag({ content: STYLES.DISABLE_EVAL_BG_FLASH });
-
-        if (cliOptions.maximiseMenuPanel) {
-            await page.addStyleTag({ content: STYLES.MAX_MENU_PANEL });
-        }
-        if (cliOptions.hideTopBar) {
-            await page.addStyleTag({ content: STYLES.HIDE_TOP_BAR });
-        }
-        if (cliOptions.hideMenuPanel) {
-            await page.addStyleTag({ content: STYLES.HIDE_MENU_PANEL });
-        }
-        if (cliOptions.hideCodeEditor) {
-            await page.addStyleTag({ content: STYLES.HIDE_CODE_EDITOR });
-        }
-        if (cliOptions.hideErrorDisplay) {
-            await page.addStyleTag({ content: STYLES.HIDE_ERROR_DISPLAY });
-        }
-        if (cliOptions.customCss) {
-            await page.addStyleTag({ content: cliOptions.customCss });
-        }
-
+        // await page.addStyleTag({ content: STYLES.HIDE_EDITOR_SCROLLBAR });
+        // await page.addStyleTag({ content: STYLES.DISABLE_EVAL_BG_FLASH });
+        //
+        // if (Options.maximiseMenuPanel) {
+        //     await page.addStyleTag({ content: STYLES.MAX_MENU_PANEL });
+        // }
+        // if (Options.hideTopBar) {
+        //     await page.addStyleTag({ content: STYLES.HIDE_TOP_BAR });
+        // }
+        // if (Options.hideMenuPanel) {
+        //     await page.addStyleTag({ content: STYLES.HIDE_MENU_PANEL });
+        // }
+        // if (Options.hideCodeEditor) {
+        //     await page.addStyleTag({ content: STYLES.HIDE_CODE_EDITOR });
+        // }
+        // if (Options.hideErrorDisplay) {
+        //     await page.addStyleTag({ content: STYLES.HIDE_ERROR_DISPLAY });
+        // }
+        // if (Options.customCss) {
+        //     await page.addStyleTag({ content: Options.customCss });
+        // }
+        //
         await page.evaluate(() => {
             const el = document.createElement("div");
             el.id = "autoplay-helper";
@@ -659,7 +625,7 @@ function expandTilde(p: string | undefined): string | undefined {
                 process.stdout.write(MESSAGES.CONTENT + base64Content + "\n");
             }
         });
-        if (!cliOptions.isHeadless) {
+        if (!Options.isHeadless) {
             await page.evaluate(
                 ({ editorSelector, eventName }) => {
                     const editor = document.querySelector(editorSelector);
@@ -716,7 +682,7 @@ function expandTilde(p: string | undefined): string | undefined {
             });
             process.stdout.write(MESSAGES.CURSOR + cursor + "\n");
         });
-        if (!cliOptions.isHeadless) {
+        if (!Options.isHeadless) {
             await page.evaluate((editorSelector) => {
                 const editor = document.querySelector(editorSelector);
                 if (!editor) return;

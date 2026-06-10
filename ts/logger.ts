@@ -1,9 +1,8 @@
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
+import { Options } from "./settings.ts";
 
-const LOG_DIR = path.join(os.homedir(), ".cache", "strudelPWA-nvim");
-const LOG_FILE = path.join(LOG_DIR, "runtime.log");
+const LOG_FILE = path.join(Options.userDataDir, "runtime.log");
 
 export type LogLevel = "DEBUG" | "INFO" | "ERROR";
 
@@ -58,7 +57,7 @@ async function writeLog(level: LogLevel, message: unknown, ...details: unknown[]
 
 	if (shouldWriteToFile(level)) {
 		try {
-			await fs.mkdir(LOG_DIR, { recursive: true });
+			await fs.mkdir(Options.userDataDir, { recursive: true });
 			await fs.appendFile(LOG_FILE, line, "utf8");
 		} catch {
 			// Logging must never break the runtime.
