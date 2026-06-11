@@ -43,7 +43,7 @@ local config = {
   browser = {
     headless = false,
     user_data_dir = vim.fn.expand("~/.cache/strudelPWA-nvim"),
-    browser_exec_path = nil,
+    browser_exec_path = "chrome",
     proxy = nil,
   },
 
@@ -449,9 +449,16 @@ function M.setup(opts)
   })
 
   -- Commands
-  vim.api.nvim_create_user_command("StrudelStart", M.start_strudel, {})
+  vim.api.nvim_create_user_command("StrudelStart", M.start_strudel, {
+    nargs = "*",
+    complete = function(arg_lead)
+      local commands = { "proxy" }
+      return vim.tbl_filter(function(cmd)
+        return cmd:lower():find(arg_lead:lower(), 1, true)
+      end, commands)
+    end,
+  })
   vim.api.nvim_create_user_command("StrudelAttach", M.attach_editor, {})
-
   vim.api.nvim_create_user_command("StrudelQuit", M.quit, {})
   vim.api.nvim_create_user_command("StrudelToggle", M.toggle, {})
   vim.api.nvim_create_user_command("StrudelUpdate", M.update, {})
@@ -462,6 +469,23 @@ end
 
 
 function M.start_strudel(opts)
+  if opts.fargs[1] then
+    ---@type string, string
+    local key, value = opts.fargs[1]:match("^([%w_%-]+)=(.+)")
+    if key == "proxy" and value ~= "" then
+      if value:match("^https?://") then
+        config.browser.proxy = value
+      elseif value:match("^%d+$") then
+        config.browser.proxy = "http://localhost:" .. value
+      else
+        vim.notify("Invalid proxy format. Use proxy=http://example:8080 or proxy=8080", vim.log.levels.ERROR)
+        return
+      end
+    else
+      vim.notify("Invalid argument for :StrudelStart. Usage: :StrudelStart proxy=http://my-proxy:8080", vim.log.levels.ERROR)
+      return
+    end
+  end
 
   local pwa_command = get_local_pwa_command()
   debugging_port = get_free_port()
