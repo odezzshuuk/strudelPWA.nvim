@@ -44,6 +44,7 @@ local config = {
     headless = false,
     user_data_dir = vim.fn.expand("~/.cache/strudelPWA-nvim"),
     browser_exec_path = nil,
+    proxy = nil,
   },
 
   editor = {
@@ -327,6 +328,21 @@ local function split_command_line(command)
   return tokens
 end
 
+---@param args string[]
+---@return string[]
+local function strip_desktop_field_codes(args)
+  local result = {}
+
+  for _, arg in ipairs(args) do
+    local stripped_arg = arg:gsub("%%[fFuUdDnNickvm]", "")
+    if #stripped_arg > 0 then
+      table.insert(result, stripped_arg)
+    end
+  end
+
+  return result
+end
+
 local function get_local_pwa_command()
   local home = os.getenv("HOME")
   if not home then
@@ -340,7 +356,7 @@ local function get_local_pwa_command()
   end
 
   while true do
-    local name, type = uv.fs_scandir_next(handle)
+    local name, _ = uv.fs_scandir_next(handle)
     if not name then
       break
     end
@@ -349,6 +365,7 @@ local function get_local_pwa_command()
       local file_path = applications_dir .. "/" .. name
       local file = io.open(file_path, "r")
       if file then
+        ---@type string
         local content = file:read("*a")
         file:close()
 
@@ -356,16 +373,18 @@ local function get_local_pwa_command()
         local app_name = nil
         local exec_cmd = nil
 
-        for line in content:gmatch("[^\\r\\n]+") do
-          line = line:match("^%s*(.-)%s*$") -- trim
-          if #line > 0 and not line:match("^#") then
-            if line:match("^%[") and line:match("%]$") then
-              in_desktop_entry = (line == "[Desktop Entry]")
+        local normalized_content = content:gsub("\r\n", "\n"):gsub("\r", "\n")
+
+        for line in (normalized_content .. "\n"):gmatch("([^\n]*)\n") do
+          local trimmed_line = line:match("^%s*(.-)%s*$") -- trim
+          if #trimmed_line > 0 and not trimmed_line:match("^#") then
+            if trimmed_line:match("^%[") and trimmed_line:match("%]$") then
+              in_desktop_entry = (trimmed_line == "[Desktop Entry]")
             elseif in_desktop_entry then
-              local eq = line:find("=")
+              local eq = trimmed_line:find("=")
               if eq then
-                local key = line:sub(1, eq - 1)
-                local value = line:sub(eq + 1)
+                local key = trimmed_line:sub(1, eq - 1)
+                local value = trimmed_line:sub(eq + 1)
                 if key == "Name" then
                   app_name = value
                 elseif key == "Exec" then
@@ -378,21 +397,20 @@ local function get_local_pwa_command()
 
         if app_name == "Strudel REPL" and exec_cmd then
           local tokens = strip_desktop_field_codes(split_command_line(exec_cmd))
-          local executable = table.remove(tokens, 1)
-          if executable then
+          local cmd = table.remove(tokens, 1)
+          if cmd then
             local args = {}
             for _, arg in ipairs(tokens) do
               if arg:match("^--") then
-                local parts = {}
-                for part in arg:gmatch("([^=]+)") do
-                  table.insert(parts, part)
+                local key, value = arg:match("^(%-%-[^=]+)=(.*)$")
+                if not key then
+                  key = arg
+                  value = true
                 end
-                local key = parts[1]
-                local value = #parts > 1 and table.concat(parts, "=", 2) or ""
                 args[key] = value
               end
             end
-            return { executable = executable, args = args }
+            return { cmd = cmd, args = args }
           end
         end
       end
@@ -443,7 +461,7 @@ function M.setup(opts)
 end
 
 
-function M.start_strudel()
+function M.start_strudel(opts)
 
   local pwa_command = get_local_pwa_command()
   debugging_port = get_free_port()
@@ -456,7 +474,7 @@ function M.start_strudel()
 --  local user_data_dir_arg = "--user-data-dir=" .. user_data_dir
 
   if pwa_command and pwa_command.args["--user-data-dir"] then
-    executable = pwa_command.executable
+    executable = pwa_command.cmd
     args = {
       "--user-data-dir=" .. config.browser.user_data_dir,
       "--profile-directory=Default",
@@ -475,6 +493,10 @@ function M.start_strudel()
       "--disable-infobars",
       config.strudel_url
     }
+  end
+
+  if config.browser.proxy then
+    table.insert(args, "--proxy-server=" .. config.browser.proxy)
   end
 
   vim.fn.jobstart({ executable, unpack(args) }, {
@@ -497,7 +519,7 @@ function M.start_strudel()
     end,
     on_exit = function(_, code)
       if code == 0 then
-        vim.notify("browser session closed", vim.log.levels.INFO)
+        vim.notify("Browser session closed", vim.log.levels.INFO)
       else
         vim.notify("Browser process error: " .. code, vim.log.levels.ERROR)
       end

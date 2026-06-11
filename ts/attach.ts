@@ -50,7 +50,7 @@ const EVENTS = {
     CONTENT_CHANGED: "strudel-content-changed",
 };
 
-let page: Page | undefined;
+let strudelPage: Page | undefined;
 let lastContent: string;
 let browser: Browser;
 let browserCtx: BrowserContext;
@@ -95,10 +95,10 @@ async function shutdown(exitCode: number) {
 }
 
 async function updateEditorContent(content: string) {
-    if (!page) return;
+    if (!strudelPage) return;
 
     try {
-        await page.evaluate((newContent: string) => {
+        await strudelPage.evaluate((newContent: string) => {
             const view = window.strudelMirror.editor;
             const oldContent = view.state.doc.toString();
 
@@ -136,7 +136,7 @@ async function updateEditorContent(content: string) {
         void logger.error("Error updating editor", error);
     }
 
-    await page.locator("#autoplay-helper").click();
+    await strudelPage.locator("#autoplay-helper").click();
 }
 
 // async function moveEditorCursor(position: number) {
@@ -150,14 +150,14 @@ async function updateEditorContent(content: string) {
 // }
 
 async function handleCursorMessage(message: string) {
-    if (!page) return;
+    if (!strudelPage) return;
     void logger.debug("Handling cursor message", describeMessage(message));
     const cursorStr = message.slice(MESSAGES.CURSOR.length);
     const [rowStr, colStr] = cursorStr.split(":");
     const row = parseInt(rowStr);
     const col = parseInt(colStr);
 
-    await page.evaluate(
+    await strudelPage.evaluate(
         ({ row, col }) => {
             const view = window.strudelMirror.editor;
             const lineCount = view.state.doc.lines;
@@ -200,27 +200,27 @@ async function processEventQueue() {
 
 async function handleEvent(message: string | undefined) {
     if (!message) return;
-    if (!page) return;
+    if (!strudelPage) return;
 
     void logger.debug("Handling event", describeMessage(message));
     if (message === MESSAGES.QUIT) {
         await shutdown(0);
     } else if (message === MESSAGES.TOGGLE) {
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             window.strudelMirror.toggle();
         });
     } else if (message === MESSAGES.UPDATE) {
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             window.strudelMirror.evaluate();
         });
     } else if (message === MESSAGES.REFRESH) {
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             if (window.strudelMirror.repl.state.started) {
                 window.strudelMirror.evaluate();
             }
         });
     } else if (message === MESSAGES.STOP) {
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             window.strudelMirror.stop();
         });
     } else if (message.startsWith(MESSAGES.CONTENT)) {
@@ -251,13 +251,26 @@ async function handleEvent(message: string | undefined) {
             }
         });
 
-        page = browserCtx.pages()[0];
+        for (const page of browserCtx.pages()) {
+            const url = page.url();
+            if (url.includes("strudel.cc")) {
+                void logger.info("Found existing Strudel page, reusing it");
+                strudelPage = page
+                browserCtx.pages().forEach((p) => {
+                    if (p !== page) {
+                        p.close().catch(() => undefined);
+                    }
+                });
+                break;
+            }
+        }
 
-        if (!page) {
+        if (!strudelPage) {
             logger.error("No page found in browser context");
             return;
         }
-        page.on("close", () => {
+
+        strudelPage.on("close", () => {
             if (!isShuttingDown) {
                 void shutdown(0);
             }
@@ -285,7 +298,7 @@ async function handleEvent(message: string | undefined) {
         //     await page.addStyleTag({ content: Options.customCss });
         // }
         //
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             const el = document.createElement("div");
             el.id = "autoplay-helper";
             Object.assign(el.style, {
@@ -310,8 +323,8 @@ async function handleEvent(message: string | undefined) {
             document.body.appendChild(el);
         });
 
-        await page.exposeFunction("sendEditorContent", async () => {
-            const content = await page?.evaluate(() => {
+        await strudelPage.exposeFunction("sendEditorContent", async () => {
+            const content = await strudelPage?.evaluate(() => {
                 return window.strudelMirror.code;
             });
 
@@ -324,7 +337,7 @@ async function handleEvent(message: string | undefined) {
             }
         });
         if (!options.isHeadless) {
-            await page.evaluate(
+            await strudelPage.evaluate(
                 ({ editorSelector, eventName }) => {
                     const editor = document.querySelector(editorSelector);
                     if (!editor) return;
@@ -347,13 +360,13 @@ async function handleEvent(message: string | undefined) {
             );
         }
 
-        await page.exposeFunction("notifyEvalError", (evalErrorMessage: string) => {
+        await strudelPage.exposeFunction("notifyEvalError", (evalErrorMessage: string) => {
             if (evalErrorMessage) {
                 const b64 = Buffer.from(evalErrorMessage).toString("base64");
                 process.stdout.write(MESSAGES.EVAL_ERROR + b64 + "\n");
             }
         });
-        await page.evaluate(() => {
+        await strudelPage.evaluate(() => {
             let lastError: string | null = null;
             setInterval(() => {
                 try {
@@ -369,8 +382,8 @@ async function handleEvent(message: string | undefined) {
             }, 300);
         });
 
-        await page.exposeFunction("sendEditorCursor", async () => {
-            const cursor = await page?.evaluate(() => {
+        await strudelPage.exposeFunction("sendEditorCursor", async () => {
+            const cursor = await strudelPage?.evaluate(() => {
                 const view = window.strudelMirror.editor;
                 const pos = view.state.selection.main.head;
                 const lineInfo = view.state.doc.lineAt(pos);
@@ -381,7 +394,7 @@ async function handleEvent(message: string | undefined) {
             process.stdout.write(MESSAGES.CURSOR + cursor + "\n");
         });
         if (!options.isHeadless) {
-            await page.evaluate((editorSelector) => {
+            await strudelPage.evaluate((editorSelector) => {
                 const editor = document.querySelector(editorSelector);
                 if (!editor) return;
                 editor.addEventListener("keyup", window.sendEditorCursor);
