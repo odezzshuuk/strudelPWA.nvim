@@ -14,13 +14,14 @@ local MESSAGES = {
   EVAL_ERROR = "STRUDEL_EVAL_ERROR:",
 }
 
-local STRUDEL_SYNC_AUTOCOMMAND = "StrudelPWASync" local SUCCESSIVE_CMD_DELAY = 50
+local STRUDEL_SYNC_AUTOCOMMAND = "StrudelPWASync"
+local SUCCESSIVE_CMD_DELAY = 50
 
 -- State
-local strudel_job_id = nil
+local attach_job_id = nil
 local last_content = nil
 local strudel_synced_bufnr = nil
-local strudel_ready = false
+local editor_attached = false
 local custom_css_b64 = nil
 local last_received_cursor = nil -- {row, col}
 
@@ -30,6 +31,7 @@ local is_processing_event = false
 
 -- Config with default options
 local config = {
+
   ui = {
     maximise_menu_panel = true,
     hide_menu_panel = false,
@@ -38,20 +40,29 @@ local config = {
     hide_error_display = false,
     custom_css_file = nil,
   },
+  browser = {
+    headless = false,
+    user_data_dir = vim.fn.expand("~/.cache/strudelPWA-nvim"),
+    browser_exec_path = nil,
+  },
+
+  editor = {
+    update_on_save = false,
+    sync_cursor = true,
+    update_on_attach = true,
+  },
+
   report_eval_errors = true,
-  sync_cursor = true,
-  start_on_launch = true,
-  update_on_save = false,
-  headless = false,
-  browser_data_dir = nil,
-  browser_exec_path = nil,
-  strudel_url = nil,
+  strudel_url = "https://cold.strudel.cc",
   log_level = "INFO",
 }
 
+---@type number
+local debugging_port
+
 local function send_message(message)
-  if strudel_job_id then
-    vim.fn.chansend(strudel_job_id, message .. "\n")
+  if attach_job_id then
+    vim.fn.chansend(attach_job_id, message .. "\n")
   else
     vim.notify("No active Strudel session", vim.log.levels.WARN)
   end
@@ -59,10 +70,10 @@ end
 
 local function send_cursor_position()
   if
-    not strudel_job_id
-    or not strudel_synced_bufnr
-    or not strudel_ready
-    or not config.sync_cursor
+      not attach_job_id
+      or not strudel_synced_bufnr
+      or not editor_attached
+      or not config.editor.sync_cursor
   then
     return
   end
@@ -79,7 +90,7 @@ local function send_cursor_position()
 end
 
 local function send_buffer_content()
-  if not strudel_job_id or not strudel_synced_bufnr or not strudel_ready then
+  if not attach_job_id or not strudel_synced_bufnr or not editor_attached then
     return
   end
   if not vim.api.nvim_buf_is_valid(strudel_synced_bufnr) then
@@ -119,12 +130,77 @@ local function set_buffer_content(bufnr, content)
   end)
 end
 
+local function set_buffer(opts)
+  vim.api.nvim_clear_autocmds({ group = STRUDEL_SYNC_AUTOCOMMAND })
+
+  if not attach_job_id then
+    vim.notify("No active Strudel session", vim.log.levels.WARN)
+    return false
+  end
+
+  local bufnr = opts and opts.args and opts.args ~= "" and tonumber(opts.args)
+      or vim.api.nvim_get_current_buf()
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    vim.notify("Invalid buffer number for :StrudelSetBuffer", vim.log.levels.ERROR)
+    return false
+  end
+
+  strudel_synced_bufnr = bufnr
+  send_buffer_content()
+
+  -- Set up autocommand to sync buffer changes
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = STRUDEL_SYNC_AUTOCOMMAND,
+    buffer = bufnr,
+    callback = function()
+      if not is_processing_event and strudel_synced_bufnr then
+        send_buffer_content()
+      end
+    end,
+  })
+
+  -- Set up autocommand to sync cursor position if enabled
+  if config.editor.sync_cursor then
+    vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+      group = STRUDEL_SYNC_AUTOCOMMAND,
+      buffer = bufnr,
+      callback = function()
+        if not is_processing_event then
+          send_cursor_position()
+        end
+      end,
+    })
+  end
+
+  -- Set up autocommand to update on save
+  if config.editor.update_on_save then
+    vim.api.nvim_create_autocmd("BufWritePost", {
+      group = STRUDEL_SYNC_AUTOCOMMAND,
+      buffer = bufnr,
+      callback = function()
+        if attach_job_id then
+          -- Use the REFRESH message to update only when already playing
+          send_message(MESSAGES.REFRESH)
+        end
+      end,
+    })
+  end
+
+  local buffer_name = vim.fn.bufname(bufnr)
+  if buffer_name == "" then
+    buffer_name = "#" .. bufnr
+  end
+  vim.notify("Strudel is now syncing buffer " .. buffer_name, vim.log.levels.INFO)
+
+  return true
+end
+
 local function handle_event(full_data)
   if full_data:match("^" .. MESSAGES.READY) then
-    strudel_ready = true
+    editor_attached = true
     if strudel_synced_bufnr then
       send_buffer_content()
-      if config.start_on_launch then
+      if config.editor.update_on_attach then
         vim.defer_fn(function()
           M.update()
         end, SUCCESSIVE_CMD_DELAY * 2)
@@ -140,7 +216,7 @@ local function handle_event(full_data)
       local content = base64.decode(content_b64)
       set_buffer_content(strudel_synced_bufnr, content)
     end
-  elseif full_data:match("^" .. MESSAGES.CURSOR) and config.sync_cursor then
+  elseif full_data:match("^" .. MESSAGES.CURSOR) and config.editor.sync_cursor then
     local cursor_str = full_data:sub(#MESSAGES.CURSOR + 1)
     local row, col = cursor_str:match("^(%d+):(%d+)$")
     row, col = tonumber(row), tonumber(col)
@@ -174,7 +250,7 @@ local function handle_event(full_data)
   end
 end
 
-local function process_event_queue()
+local function attach_process_event_queue()
   if is_processing_event then
     return
   end
@@ -189,6 +265,140 @@ local function process_event_queue()
 
     is_processing_event = false
   end)
+end
+
+local uv = vim.loop
+
+---Finds an available TCP port on the local machine.
+---@return number: An available port number.
+local function get_free_port()
+  local server = uv.new_tcp()
+  local port = 0
+  local ok, err = server:bind("127.0.0.1", 0)
+  if ok then
+    local sock_name = server:getsockname()
+    if sock_name then
+      port = sock_name.port
+    end
+  else
+    -- Fallback, should be rare
+    port = math.random(49152, 65535) end server:close()
+  return port
+end
+
+---Splits a command-line string into tokens, handling quotes and escapes.
+---@param command string The command line string.
+---@return string[]
+local function split_command_line(command)
+  local tokens = {}
+  local current = ""
+  local quote = nil
+  local escaping = false
+
+  for i = 1, #command do
+    local char = command:sub(i, i)
+    if escaping then
+      current = current .. char
+      escaping = false
+    elseif char == "\\" then
+      escaping = true
+    elseif quote then
+      if char == quote then
+        quote = nil
+      else
+        current = current .. char
+      end
+    elseif char == '"' or char == "'" then
+      quote = char
+    elseif char:match("%s") then
+      if #current > 0 then
+        table.insert(tokens, current)
+        current = ""
+      end
+    else
+      current = current .. char
+    end
+  end
+
+  if #current > 0 then
+    table.insert(tokens, current)
+  end
+
+  return tokens
+end
+
+local function get_local_pwa_command()
+  local home = os.getenv("HOME")
+  if not home then
+    return nil
+  end
+  local applications_dir = home .. "/.local/share/applications"
+
+  local handle = uv.fs_scandir(applications_dir)
+  if not handle then
+    return nil
+  end
+
+  while true do
+    local name, type = uv.fs_scandir_next(handle)
+    if not name then
+      break
+    end
+
+    if name:match("%.desktop$") then
+      local file_path = applications_dir .. "/" .. name
+      local file = io.open(file_path, "r")
+      if file then
+        local content = file:read("*a")
+        file:close()
+
+        local in_desktop_entry = false
+        local app_name = nil
+        local exec_cmd = nil
+
+        for line in content:gmatch("[^\\r\\n]+") do
+          line = line:match("^%s*(.-)%s*$") -- trim
+          if #line > 0 and not line:match("^#") then
+            if line:match("^%[") and line:match("%]$") then
+              in_desktop_entry = (line == "[Desktop Entry]")
+            elseif in_desktop_entry then
+              local eq = line:find("=")
+              if eq then
+                local key = line:sub(1, eq - 1)
+                local value = line:sub(eq + 1)
+                if key == "Name" then
+                  app_name = value
+                elseif key == "Exec" then
+                  exec_cmd = value
+                end
+              end
+            end
+          end
+        end
+
+        if app_name == "Strudel REPL" and exec_cmd then
+          local tokens = strip_desktop_field_codes(split_command_line(exec_cmd))
+          local executable = table.remove(tokens, 1)
+          if executable then
+            local args = {}
+            for _, arg in ipairs(tokens) do
+              if arg:match("^--") then
+                local parts = {}
+                for part in arg:gmatch("([^=]+)") do
+                  table.insert(parts, part)
+                end
+                local key = parts[1]
+                local value = #parts > 1 and table.concat(parts, "=", 2) or ""
+                args[key] = value
+              end
+            end
+            return { executable = executable, args = args }
+          end
+        end
+      end
+    end
+  end
+  return nil
 end
 
 -- Public API
@@ -221,24 +431,92 @@ function M.setup(opts)
   })
 
   -- Commands
-  vim.api.nvim_create_user_command("StrudelLaunch", M.launch, {})
+  vim.api.nvim_create_user_command("StrudelStart", M.start_strudel, {})
+  vim.api.nvim_create_user_command("StrudelAttach", M.attach_editor, {})
+
   vim.api.nvim_create_user_command("StrudelQuit", M.quit, {})
   vim.api.nvim_create_user_command("StrudelToggle", M.toggle, {})
   vim.api.nvim_create_user_command("StrudelUpdate", M.update, {})
   vim.api.nvim_create_user_command("StrudelStop", M.stop, {})
-  vim.api.nvim_create_user_command("StrudelSetBuffer", M.set_buffer, { nargs = "?" })
+  vim.api.nvim_create_user_command("StrudelSetBuffer", set_buffer, { nargs = "?" })
   vim.api.nvim_create_user_command("StrudelExecute", M.execute, {})
 end
 
-function M.launch()
-  if strudel_job_id ~= nil then
+
+function M.start_strudel()
+
+  local pwa_command = get_local_pwa_command()
+  debugging_port = get_free_port()
+
+  ---@type string[]
+  local args
+  ---@type string
+  local executable
+
+--  local user_data_dir_arg = "--user-data-dir=" .. user_data_dir
+
+  if pwa_command and pwa_command.args["--user-data-dir"] then
+    executable = pwa_command.executable
+    args = {
+      "--user-data-dir=" .. config.browser.user_data_dir,
+      "--profile-directory=Default",
+      "--app-id=camedmhajlokcgipjhegkdobhmafconk",
+      "--remote-debugging-port=" .. debugging_port,
+      "--autoplay-policy=no-user-gesture-required",
+      "--disable-infobars",
+    }
+  else
+    executable = config.browser.browser_exec_path or "chrome"
+    args = {
+      "--profile-directory=Default",
+      "--user-data-dir=" .. config.browser.user_data_dir,
+      "--remote-debugging-port=" .. debugging_port,
+      "--autoplay-policy=no-user-gesture-required",
+      "--disable-infobars",
+      config.strudel_url
+    }
+  end
+
+  vim.fn.jobstart({ executable, unpack(args) }, {
+    -- To prevent hanging Neovim, we don't connect stdio/stderr
+    -- The browser process will run in the background.
+    -- Users can see browser logs via chrome://inspect
+    detach = true,
+    on_stderr = function(_, data)
+      if not data then
+        return
+      end
+
+      for _, line in ipairs(data) do
+        if line == "" then
+          -- ignore empty lines
+        elseif line:match("DevTools listening on ws://") then
+          vim.notify(line, vim.log.levels.INFO)
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      if code == 0 then
+        vim.notify("browser session closed", vim.log.levels.INFO)
+      else
+        vim.notify("Browser process error: " .. code, vim.log.levels.ERROR)
+      end
+    end,
+  })
+end
+
+function M.attach_editor()
+  if attach_job_id ~= nil then
     vim.notify("Strudel is already running, run :StrudelQuit to quit.", vim.log.levels.WARN)
     return
   end
 
   local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
   local launch_script = plugin_root .. "/ts/attach.ts"
+
   local cmd = "node " .. vim.fn.shellescape(launch_script)
+  ---@type string
+  cmd = cmd .. " --debugging-port=" .. debugging_port
 
   if config.ui.hide_top_bar then
     cmd = cmd .. " --hide-top-bar"
@@ -258,18 +536,15 @@ function M.launch()
   if custom_css_b64 then
     cmd = cmd .. " --custom-css-b64=" .. vim.fn.shellescape(custom_css_b64)
   end
-  if config.headless then
-    cmd = cmd .. " --headless"
-  end
-  if config.browser_exec_path then
-    cmd = cmd .. " --browser-exec-path=" .. vim.fn.shellescape(config.browser_exec_path)
-  end
+  -- if config.headless then
+  --   cmd = cmd .. " --headless"
+  -- end
   if config.log_level then
     cmd = cmd .. " --log-level=" .. vim.fn.shellescape(config.log_level)
   end
 
   -- Run the js script
-  strudel_job_id = vim.fn.jobstart(cmd, {
+  attach_job_id = vim.fn.jobstart(cmd, {
     on_stderr = function(_, data)
       if not data then
         return
@@ -292,30 +567,49 @@ function M.launch()
         end
       end
 
-      process_event_queue()
+      attach_process_event_queue()
     end,
     on_exit = function(_, code)
-      if code == 0 then
-        vim.notify("Strudel session closed", vim.log.levels.INFO)
-      else
-        vim.notify("Strudel process error: " .. code, vim.log.levels.ERROR)
+      if code ~= 0 then
+        vim.notify("Detached Cause Error: " .. code, vim.log.levels.ERROR)
       end
 
-      -- reset state
-      strudel_ready = false
-      strudel_job_id = nil
-      last_content = nil
-      strudel_synced_bufnr = nil
-      last_received_cursor = nil
+      M.detach()
     end,
   })
 
-  M.set_buffer()
+  set_buffer()
 end
 
-function M.is_launched()
-  return strudel_job_id ~= nil
+function M.detach()
+  if attach_job_id then
+    vim.fn.jobstop(attach_job_id)
+    attach_job_id = nil
+    vim.notify("Editor Detached", vim.log.levels.INFO)
+  else
+    vim.notify("No active Strudel session to detach from", vim.log.levels.WARN)
+  end
+
+  attach_job_id = nil
+  editor_attached = false
+  last_content = nil
+  strudel_synced_bufnr = nil
+  last_received_cursor = nil
 end
+
+-- Combo command to set the current buffer and trigger update
+function M.execute()
+  local ok = set_buffer()
+  if ok then
+    vim.defer_fn(function()
+      M.update()
+    end, SUCCESSIVE_CMD_DELAY * 2)
+  end
+end
+
+-- function M.is_launched()
+--   return strudel_job_id ~= nil
+-- end
 
 function M.quit()
   send_message(MESSAGES.QUIT)
@@ -331,80 +625,6 @@ end
 
 function M.stop()
   send_message(MESSAGES.STOP)
-end
-
-function M.set_buffer(opts)
-  vim.api.nvim_clear_autocmds({ group = STRUDEL_SYNC_AUTOCOMMAND })
-
-  if not strudel_job_id then
-    vim.notify("No active Strudel session", vim.log.levels.WARN)
-    return false
-  end
-
-  local bufnr = opts and opts.args and opts.args ~= "" and tonumber(opts.args) or vim.api.nvim_get_current_buf()
-  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-    vim.notify("Invalid buffer number for :StrudelSetBuffer", vim.log.levels.ERROR)
-    return false
-  end
-
-  strudel_synced_bufnr = bufnr
-  send_buffer_content()
-
-  -- Set up autocommand to sync buffer changes
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    group = STRUDEL_SYNC_AUTOCOMMAND,
-    buffer = bufnr,
-    callback = function()
-      if not is_processing_event and strudel_synced_bufnr then
-        send_buffer_content()
-      end
-    end,
-  })
-
-  -- Set up autocommand to sync cursor position if enabled
-  if config.sync_cursor then
-    vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
-      group = STRUDEL_SYNC_AUTOCOMMAND,
-      buffer = bufnr,
-      callback = function()
-        if not is_processing_event then
-          send_cursor_position()
-        end
-      end,
-    })
-  end
-
-  -- Set up autocommand to update on save
-  if config.update_on_save then
-    vim.api.nvim_create_autocmd("BufWritePost", {
-      group = STRUDEL_SYNC_AUTOCOMMAND,
-      buffer = bufnr,
-      callback = function()
-        if strudel_job_id then
-          -- Use the REFRESH message to update only when already playing
-          send_message(MESSAGES.REFRESH)
-        end
-      end,
-    })
-  end
-
-  local buffer_name = vim.fn.bufname(bufnr)
-  if buffer_name == "" then
-    buffer_name = "#" .. bufnr
-  end
-  vim.notify("Strudel is now syncing buffer " .. buffer_name, vim.log.levels.INFO)
-
-  return true
-end
-
--- Combo command to set the current buffer and trigger update
-function M.execute()
-  local ok = M.set_buffer()
-  if ok then
-    vim.defer_fn(function()
-      M.update()
-    end, SUCCESSIVE_CMD_DELAY * 2)
-  end
 end
 
 return M

@@ -1,10 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
-import { Options } from "./settings.ts";
+import { options } from "./parseOptions.ts";
 
-const LOG_FILE = path.join(Options.userDataDir, "runtime.log");
+const LOG_FILE = path.join(options.userDataDir, "runtime.log");
+let fileLogLevel: LogLevel = "INFO";
 
 export type LogLevel = "DEBUG" | "INFO" | "ERROR";
+setFileLogLevel("INFO");
 
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 	DEBUG: 10,
@@ -12,7 +14,6 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 	ERROR: 30,
 };
 
-let fileLogLevel: LogLevel = "INFO";
 
 function normalizeMessage(message: unknown): string {
 	if (message instanceof Error) {
@@ -57,7 +58,7 @@ async function writeLog(level: LogLevel, message: unknown, ...details: unknown[]
 
 	if (shouldWriteToFile(level)) {
 		try {
-			await fs.mkdir(Options.userDataDir, { recursive: true });
+			await fs.mkdir(options.userDataDir, { recursive: true });
 			await fs.appendFile(LOG_FILE, line, "utf8");
 		} catch {
 			// Logging must never break the runtime.

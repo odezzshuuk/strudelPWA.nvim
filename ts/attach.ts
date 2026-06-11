@@ -1,11 +1,12 @@
-import fs from "fs/promises";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import path from "path";
+import {
+    chromium,
+    type Browser,
+    type BrowserContext,
+    type Page,
+} from "playwright";
 import os from "os";
-import { spawn, type ChildProcess } from "child_process";
 import { logger } from "./logger.ts";
-import { Options } from "./settings.ts"
-import { GetFreePort } from "./utils.ts";
+import { options } from "./parseOptions.ts";
 
 declare global {
     interface Window {
@@ -30,15 +31,6 @@ process.stderr.on("error", (err) => {
     void logger.error("Error writing to stderr", err);
 });
 
-const STRUDEL_URL = "https://strudel.cc/";
-const USER_DATA_DIR = path.join(os.homedir(), ".cache", "strudel-nvim");
-
-
-type LocalPWACommand = {
-    executable: string;
-    args: Record<string, string>;
-};
-
 const MESSAGES = {
     CONTENT: "STRUDEL_CONTENT:",
     QUIT: "STRUDEL_QUIT",
@@ -57,97 +49,6 @@ const SELECTORS = {
 const EVENTS = {
     CONTENT_CHANGED: "strudel-content-changed",
 };
-const STYLES = {
-    HIDE_EDITOR_SCROLLBAR: `
-		.cm-scroller {
-			scrollbar-width: none;
-		}
-	`,
-    HIDE_TOP_BAR: `
-		header {
-			display: none !important;
-		}
-	`,
-    MAX_MENU_PANEL: `
-		nav:not(:has(> button:first-child)) {
-			position: absolute;
-			z-index: 99;
-			height: 100%;
-			width: 100vw;
-			max-width: 100vw;
-			background: linear-gradient(var(--lineHighlight), var(--lineHighlight)), var(--background);
-		}
-	`,
-    HIDE_MENU_PANEL: `
-		nav {
-			display: none !important;
-		}
-	`,
-    HIDE_CODE_EDITOR: `
-		.cm-editor {
-			display: none !important;
-		}
-	`,
-    HIDE_ERROR_DISPLAY: `
-		header + div + div {
-			display: none !important;
-		}
-	`,
-    DISABLE_EVAL_BG_FLASH: `
-		.cm-line:not(.cm-activeLine):has(> span) {
-			background: var(--lineBackground) !important;
-			width: fit-content;
-		}
-		.cm-line.cm-activeLine {
-			background: linear-gradient(var(--lineHighlight), var(--lineHighlight)), var(--lineBackground) !important;
-		}
-		.cm-line > *, .cm-line span[style*="background-color"] {
-			background-color: transparent !important;
-			filter: none !important;
-		}
-	`,
-};
-
-const CLI_ARGS = {
-    HIDE_TOP_BAR: "--hide-top-bar",
-    MAXIMISE_MENU_PANEL: "--maximise-menu-panel",
-    HIDE_MENU_PANEL: "--hide-menu-panel",
-    HIDE_CODE_EDITOR: "--hide-code-editor",
-    HIDE_ERROR_DISPLAY: "--hide-error-display",
-    CUSTOM_CSS_B64: "--custom-css-b64=",
-    HEADLESS: "--headless",
-    USER_DATA_DIR: "--user-data-dir=",
-    BROWSER_EXEC_PATH: "--browser-exec-path=",
-};
-
-for (const arg of process.argv) {
-    if (arg === CLI_ARGS.HIDE_TOP_BAR) {
-        Options.hideTopBar = true;
-    } else if (arg === CLI_ARGS.MAXIMISE_MENU_PANEL) {
-        Options.maximiseMenuPanel = true;
-    } else if (arg === CLI_ARGS.HIDE_MENU_PANEL) {
-        Options.hideMenuPanel = true;
-    } else if (arg === CLI_ARGS.HIDE_CODE_EDITOR) {
-        Options.hideCodeEditor = true;
-    } else if (arg === CLI_ARGS.HIDE_ERROR_DISPLAY) {
-        Options.hideErrorDisplay = true;
-    } else if (arg.startsWith(CLI_ARGS.CUSTOM_CSS_B64)) {
-        const b64 = arg.slice(CLI_ARGS.CUSTOM_CSS_B64.length);
-        try {
-            Options.customCss = Buffer.from(b64, "base64").toString("utf8");
-        } catch (e) {
-            void logger.error("Failed to decode custom CSS", e);
-        }
-    } else if (arg === CLI_ARGS.HEADLESS) {
-        Options.isHeadless = true;
-    } else if (arg.startsWith(CLI_ARGS.USER_DATA_DIR)) {
-        Options.userDataDir = arg.slice(CLI_ARGS.USER_DATA_DIR.length);
-    } else if (arg.startsWith(CLI_ARGS.BROWSER_EXEC_PATH)) {
-        Options.browserExecPath = arg.slice(CLI_ARGS.BROWSER_EXEC_PATH.length);
-    }
-}
-
-Options.browserExecPath = expandTilde(Options.browserExecPath);
 
 let page: Page | undefined;
 let lastContent: string;
@@ -175,140 +76,6 @@ function describeMessage(message: string | undefined) {
         return `STRUDEL_EVAL_ERROR (${message.length - MESSAGES.EVAL_ERROR.length} bytes)`;
     }
     return message;
-}
-
-function splitCommandLine(command: string): string[] {
-    const tokens: string[] = [];
-    let current = "";
-    let quote: '"' | "'" | null = null;
-    let escaping = false;
-
-    for (const char of command) {
-        if (escaping) {
-            current += char;
-            escaping = false;
-            continue;
-        }
-
-        if (char === "\\") {
-            escaping = true;
-            continue;
-        }
-
-        if (quote) {
-            if (char === quote) {
-                quote = null;
-            } else {
-                current += char;
-            }
-            continue;
-        }
-
-        if (char === '"' || char === "'") {
-            quote = char;
-            continue;
-        }
-
-        if (/\s/.test(char)) {
-            if (current) {
-                tokens.push(current);
-                current = "";
-            }
-            continue;
-        }
-
-        current += char;
-    }
-
-    if (escaping) {
-        current += "\\";
-    }
-    if (current) {
-        tokens.push(current);
-    }
-
-    return tokens;
-}
-
-function stripDesktopFieldCodes(args: string[]): string[] {
-    return args
-        .map((arg) => arg.replace(/%[fFuUdDnNickvm]/g, ""))
-        .filter((arg) => arg.length > 0);
-}
-
-// function collectPages(currentBrowser: BrowserContext): Page[] {
-//     return currentBrowser.pages().flatMap((context) => context.pages());
-// }
-
-async function getLocalPWACommand(): Promise<LocalPWACommand | null> {
-    const applicationsDir = path.join(
-        os.homedir(),
-        ".local",
-        "share",
-        "applications",
-    );
-    try {
-        const entries = await fs.readdir(applicationsDir);
-        const desktopFiles = entries.filter((name) => name.endsWith(".desktop"));
-
-        for (const fileName of desktopFiles) {
-            const filePath = path.join(applicationsDir, fileName);
-            const content = await fs.readFile(filePath, "utf8");
-
-            let inDesktopEntry = false;
-            let name: string | null = null;
-            let exec: string | null = null;
-
-            for (const rawLine of content.split(/\r?\n/)) {
-                const line = rawLine.trim();
-                if (!line || line.startsWith("#")) continue;
-                if (line.startsWith("[") && line.endsWith("]")) {
-                    inDesktopEntry = line === "[Desktop Entry]";
-                    continue;
-                }
-
-                if (!inDesktopEntry) continue;
-                const eq = line.indexOf("=");
-                if (eq === -1) continue;
-
-                const key = line.slice(0, eq);
-                const value = line.slice(eq + 1);
-
-                if (key === "Name") {
-                    name = value;
-                }
-                if (key === "Exec") {
-                    exec = value;
-                }
-            }
-
-            if (name !== "Strudel REPL" || !exec) {
-                continue;
-            }
-
-            const tokens = stripDesktopFieldCodes(splitCommandLine(exec));
-            const [executable, ...rawArgs] = tokens;
-            if (!executable) {
-                continue;
-            }
-
-            const args: Record<string, string> = {};
-            for (const arg of rawArgs) {
-                if (arg.startsWith("--")) {
-                    const parts = arg.split("=");
-                    const key = parts[0];
-                    const value = parts.length > 1 ? parts.slice(1).join("=") : "";
-                    args[key] = value;
-                }
-            }
-
-            return { executable, args };
-        }
-    } catch (error) {
-        void logger.error("Error reading desktop files", error);
-    }
-
-    return null;
 }
 
 async function shutdown(exitCode: number) {
@@ -469,90 +236,22 @@ async function handleEvent(message: string | undefined) {
     }
 }
 
-function expandTilde(p: string | undefined): string | undefined {
-    if (!p) return undefined;
-    if (p === "~") return os.homedir();
-    if (p.startsWith("~/")) {
-        return path.join(os.homedir(), p.slice(2));
-    }
-    return p;
-}
-
 (async () => {
     try {
         process.stdout.write(`Log write to file: ${logger.path.replace(os.homedir(), "~")}\n`);
 
-        const pwaCommand = await getLocalPWACommand();
-        let freePort = await GetFreePort();
-        let spwOpts: { stdio: ("ignore" | "pipe" | "inherit" | number )[] } = { stdio: ["pipe", "pipe", 1] };
+        browser = await chromium.connectOverCDP(`http://127.0.0.1:${options.debuggingPort}`);
 
-        // user data is necessary
-        if (
-            !pwaCommand ||
-            !("--user-data-dir" in pwaCommand.args) ||
-            pwaCommand.args["--user-data-dir"] !== Options.userDataDir
-
-        ) {
-            void logger.info( "PWA not installed or not installed at given user-data-dir",);
-            process.stdout.write("Strudel not locally installed, launching from browser\n");
-
-            spawn(Options.browserExecPath || "chrome", [
-                "--profile-directory=Default",
-                `--user-data-dir=${Options.userDataDir}`,
-                `--remote-debugging-port=${freePort}`,
-                "--autoplay-policy=no-user-gesture-required",
-                "--disable-infobars",
-            ], spwOpts);
-
-            browser = await chromium.connectOverCDP("http://localhost:" + freePort);
-            browserCtx = browser.contexts()[0];
-
-            // check url of every pages if it contains strudel.cc, if yes reuse it and close others
-            let reuse = false;
-            for (const pg of browserCtx.pages()) {
-                const url = pg.url();
-                if (url.includes("strudel.cc")) {
-                    void logger.info("Found existing Strudel page, reusing it");
-                    reuse = true;
-                    page = pg
-                    browserCtx.pages().forEach((p) => {
-                        if (p !== pg) {
-                            p.close().catch(() => undefined);
-                        }
-                    });
-                    break;
-                }
-            }
-
-            if (!reuse) {
-                page = browserCtx.pages()[0];
-                await page.goto(STRUDEL_URL);
-            }
-        } else {
-            void logger.info("Launch from PWA");
-            void logger.info("PWA executable: ", pwaCommand.executable);
-            void logger.info("PWA args:", Object.entries(pwaCommand.args).map(([key, value]) => `${key}=${value}`))
-
-            spawn(pwaCommand.executable, [
-                // ...pwaCommand.args && Object.entries(pwaCommand.args).map(([key, value]) => `${key}=${value}`),
-                "--user-data-dir=/home/odezzshog/.cache/strudelPWA-nvim",
-                "--profile-directory=Default",
-                "--app-id=camedmhajlokcgipjhegkdobhmafconk",
-                `--remote-debugging-port=${freePort}`,
-                "--autoplay-policy=no-user-gesture-required",
-                "--disable-infobars",
-            ], spwOpts);
-
-            browser = await chromium.connectOverCDP("http://localhost:" + freePort);
-            browserCtx = browser.contexts()[0];
-            page = browserCtx.pages()[0];
-        }
+        process.stdout.write("Connected to browser\n");
+        browserCtx = browser.contexts()[0];
 
         browserCtx.on("close", () => {
             if (!isShuttingDown) {
                 process.exit(0);
             }
         });
+
+        page = browserCtx.pages()[0];
 
         if (!page) {
             logger.error("No page found in browser context");
@@ -624,7 +323,7 @@ function expandTilde(p: string | undefined): string | undefined {
                 process.stdout.write(MESSAGES.CONTENT + base64Content + "\n");
             }
         });
-        if (!Options.isHeadless) {
+        if (!options.isHeadless) {
             await page.evaluate(
                 ({ editorSelector, eventName }) => {
                     const editor = document.querySelector(editorSelector);
@@ -681,7 +380,7 @@ function expandTilde(p: string | undefined): string | undefined {
             });
             process.stdout.write(MESSAGES.CURSOR + cursor + "\n");
         });
-        if (!Options.isHeadless) {
+        if (!options.isHeadless) {
             await page.evaluate((editorSelector) => {
                 const editor = document.querySelector(editorSelector);
                 if (!editor) return;
