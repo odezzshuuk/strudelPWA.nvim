@@ -502,13 +502,13 @@ function M.start_strudel(opts)
     args = {
       "--user-data-dir=" .. config.browser.user_data_dir,
       "--profile-directory=Default",
-      "--app-id=camedmhajlokcgipjhegkdobhmafconk",
+      "--app-id=" .. pwa_command.args["--app-id"],
       "--remote-debugging-port=" .. debugging_port,
       "--autoplay-policy=no-user-gesture-required",
       "--disable-infobars",
     }
   else
-    executable = config.browser.browser_exec_path or "chrome"
+    executable = config.browser.browser_exec_path
     args = {
       "--profile-directory=Default",
       "--user-data-dir=" .. config.browser.user_data_dir,
@@ -528,6 +528,17 @@ function M.start_strudel(opts)
     -- The browser process will run in the background.
     -- Users can see browser logs via chrome://inspect
     detach = true,
+    on_stdout = function(_, data)
+      if not data then
+        return
+      end
+
+      for _, line in ipairs(data) do
+        if line ~= "" then
+          vim.notify(line, vim.log.levels.INFO)
+        end
+      end
+    end,
     on_stderr = function(_, data)
       if not data then
         return
@@ -538,6 +549,8 @@ function M.start_strudel(opts)
           -- ignore empty lines
         elseif line:match("DevTools listening on ws://") then
           vim.notify(line, vim.log.levels.INFO)
+        else
+          vim.notify("Browser Process Error: " .. line, vim.log.levels.ERROR)
         end
       end
     end,
