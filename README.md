@@ -19,3 +19,8 @@ vim.pack.add({
 })
 ```
 
+## Notes
+
+After `:StrudelStart`, the plugin persists the browser debugging port under `vim.fn.stdpath("state") .. "/strudelPWA/debugging_port"`.
+That lets a fresh Neovim session run `:StrudelAttach` against the existing Strudel browser session without re-entering the port manually.
+

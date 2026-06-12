@@ -1,11 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
-import { options } from "./parseOptions.ts";
+import os from "os";
 
-const LOG_FILE = path.join(options.userDataDir, "runtime.log");
-let fileLogLevel: LogLevel = "INFO";
 
+const LOG_FILE = path.join(os.homedir(), ".cache", "strudelPWA-nvim", "runtime.log");
 export type LogLevel = "DEBUG" | "INFO" | "ERROR";
+
+let fileLogLevel: LogLevel = "INFO";
 setFileLogLevel("INFO");
 
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
@@ -13,7 +14,6 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
 	INFO: 20,
 	ERROR: 30,
 };
-
 
 function normalizeMessage(message: unknown): string {
 	if (message instanceof Error) {
@@ -58,7 +58,6 @@ async function writeLog(level: LogLevel, message: unknown, ...details: unknown[]
 
 	if (shouldWriteToFile(level)) {
 		try {
-			await fs.mkdir(options.userDataDir, { recursive: true });
 			await fs.appendFile(LOG_FILE, line, "utf8");
 		} catch {
 			// Logging must never break the runtime.

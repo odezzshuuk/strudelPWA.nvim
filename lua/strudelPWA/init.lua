@@ -1,4 +1,5 @@
 local base64 = require("strudelPWA.base64")
+local uv = vim.loop
 
 local M = {}
 
@@ -16,6 +17,8 @@ local MESSAGES = {
 
 local STRUDEL_SYNC_AUTOCOMMAND = "StrudelPWASync"
 local SUCCESSIVE_CMD_DELAY = 50
+local PORT_STATE_DIR = vim.fn.stdpath("state") .. "/strudelPWA"
+local PORT_STATE_FILE = PORT_STATE_DIR .. "/debugging_port"
 
 -- State
 local attach_job_id = nil
@@ -58,8 +61,38 @@ local config = {
   log_level = "INFO",
 }
 
----@type number
+---@type number | nil
 local debugging_port
+
+local function persist_debugging_port(port)
+  vim.fn.mkdir(PORT_STATE_DIR, "p")
+  local ok, err = pcall(vim.fn.writefile, { tostring(port) }, PORT_STATE_FILE)
+  if not ok then
+    vim.notify("Failed to persist Strudel debugging port: " .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
+local function read_persisted_debugging_port()
+  local stat = uv.fs_stat(PORT_STATE_FILE)
+  if not stat then
+    return nil
+  end
+
+  local lines = vim.fn.readfile(PORT_STATE_FILE)
+  local persisted_port = tonumber(lines[1])
+  if not persisted_port then
+    vim.notify("Invalid persisted Strudel debugging port in " .. PORT_STATE_FILE, vim.log.levels.WARN)
+    return nil
+  end
+
+  return persisted_port
+end
+
+local function clear_persisted_debugging_port()
+  if uv.fs_stat(PORT_STATE_FILE) then
+    vim.fn.delete(PORT_STATE_FILE)
+  end
+end
 
 local function send_message(message)
   if attach_job_id then
@@ -267,8 +300,6 @@ local function attach_process_event_queue()
     is_processing_event = false
   end)
 end
-
-local uv = vim.loop
 
 ---Finds an available TCP port on the local machine.
 ---@return number: An available port number.
@@ -489,6 +520,7 @@ function M.start_strudel(opts)
 
   local pwa_command = get_local_pwa_command()
   debugging_port = get_free_port()
+  persist_debugging_port(debugging_port)
 
   ---@type string[]
   local args
@@ -570,12 +602,22 @@ function M.attach_editor()
     return
   end
 
+  if not debugging_port then
+    debugging_port = read_persisted_debugging_port()
+  end
+
+  if not debugging_port then
+    vim.notify("No Strudel session to Attach. Run :StrudelStart first.", vim.log.levels.ERROR)
+    return
+  end
+
   local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
   local launch_script = plugin_root .. "/ts/attach.ts"
 
   local cmd = "node " .. vim.fn.shellescape(launch_script)
   ---@type string
   cmd = cmd .. " --debugging-port=" .. debugging_port
+  cmd = cmd .. " --nvim-buffer-name=" .. vim.fn.expand('%:t')
 
   if config.ui.hide_top_bar then
     cmd = cmd .. " --hide-top-bar"
@@ -672,6 +714,7 @@ end
 
 function M.quit()
   send_message(MESSAGES.QUIT)
+  clear_persisted_debugging_port()
 end
 
 function M.toggle()

@@ -14,6 +14,7 @@ export const options: Options = {
     browserExecPath: undefined,
 };
 
+export let title: string | undefined = undefined; 
 
 function ParseCommandLineArgs() {
     for (const arg of process.argv) {
@@ -41,7 +42,10 @@ function ParseCommandLineArgs() {
         } else if (arg.startsWith(CLI_ARGS.DEBUGGING_PORT)) {
             const port = arg.slice(CLI_ARGS.DEBUGGING_PORT.length);
             options.debuggingPort = parseInt(port, 10);
+        } else if (arg.startsWith(CLI_ARGS.NVIM_BUFFER_NAME)) {
+            title = arg.slice(CLI_ARGS.NVIM_BUFFER_NAME.length);
         }
+
     }
     options.browserExecPath = expandTilde(options.browserExecPath);
 }
@@ -70,6 +74,7 @@ const CLI_ARGS = {
     USER_DATA_DIR: "--user-data-dir=",
     BROWSER_EXEC_PATH: "--browser-exec-path=",
     DEBUGGING_PORT: "--debugging-port=",
+    NVIM_BUFFER_NAME: "--nvim-buffer-name=",
 };
 
 function expandTilde(p: string | undefined): string | undefined {

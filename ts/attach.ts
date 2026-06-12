@@ -6,7 +6,7 @@ import {
 } from "playwright";
 import os from "os";
 import { logger } from "./logger.ts";
-import { options } from "./parseOptions.ts";
+import { options, title } from "./parseOptions.ts";
 
 declare global {
     interface Window {
@@ -17,7 +17,6 @@ declare global {
     }
 }
 
-logger.setFileLogLevel("INFO");
 
 process.on("SIGINT", () => {
     void shutdown(0);
@@ -297,8 +296,14 @@ async function handleEvent(message: string | undefined) {
         // if (Options.customCss) {
         //     await page.addStyleTag({ content: Options.customCss });
         // }
-        //
+        await strudelPage.evaluate((evlTitle) => {
+            document.title = evlTitle || document.title
+        }, title)
+
         await strudelPage.evaluate(() => {
+            if (document.getElementById("autoplay-helper")) {
+                return
+            }
             const el = document.createElement("div");
             el.id = "autoplay-helper";
             Object.assign(el.style, {
