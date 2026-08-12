@@ -4,6 +4,7 @@ import {
     type BrowserContext,
     type Page,
 } from "playwright";
+import http from "node:http";
 import os from "os";
 import { logger } from "./logger.ts";
 import { options, title } from "./parseOptions.ts";
@@ -60,6 +61,48 @@ let isShuttingDown = false;
 
 const eventQueue: string[] = [];
 let isProcessingEvent = false;
+
+/**
+ * Read the CDP WebSocket endpoint without going through environment proxies.
+ * Playwright's HTTP discovery request respects http_proxy/https_proxy, which
+ * can send this localhost request to a proxy and produce a 502 response.
+ */
+function getCdpWebSocketUrl(port: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const request = http.get(
+            {
+                hostname: "127.0.0.1",
+                port,
+                path: "/json/version/",
+                agent: false,
+            },
+            (response) => {
+                let body = "";
+                response.setEncoding("utf8");
+                response.on("data", (chunk: string) => {
+                    body += chunk;
+                });
+                response.on("end", () => {
+                    if (response.statusCode !== 200) {
+                        reject(new Error(`CDP endpoint returned HTTP ${response.statusCode}`));
+                        return;
+                    }
+
+                    try {
+                        const endpoint = JSON.parse(body).webSocketDebuggerUrl;
+                        if (typeof endpoint !== "string" || !endpoint.startsWith("ws")) {
+                            throw new Error("webSocketDebuggerUrl is missing");
+                        }
+                        resolve(endpoint);
+                    } catch (error) {
+                        reject(new Error(`Invalid CDP endpoint response: ${String(error)}`));
+                    }
+                });
+            },
+        );
+        request.on("error", reject);
+    });
+}
 
 function describeMessage(message: string | undefined) {
     if (!message) {
@@ -135,7 +178,6 @@ async function updateEditorContent(content: string) {
         void logger.error("Error updating editor", error);
     }
 
-    await strudelPage.locator("#autoplay-helper").click();
 }
 
 // async function moveEditorCursor(position: number) {
@@ -239,7 +281,11 @@ async function handleEvent(message: string | undefined) {
     try {
         process.stdout.write(`Log write to file: ${logger.path.replace(os.homedir(), "~")}\n`);
 
-        browser = await chromium.connectOverCDP(`http://127.0.0.1:${options.debuggingPort}`);
+        if (!options.debuggingPort) {
+            throw new Error("No browser debugging port was provided");
+        }
+        const cdpWebSocketUrl = await getCdpWebSocketUrl(options.debuggingPort);
+        browser = await chromium.connectOverCDP(cdpWebSocketUrl);
 
         process.stdout.write("Connected to browser\n");
         browserCtx = browser.contexts()[0];
