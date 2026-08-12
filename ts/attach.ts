@@ -300,34 +300,6 @@ async function handleEvent(message: string | undefined) {
             document.title = evlTitle || document.title
         }, title)
 
-        await strudelPage.evaluate(() => {
-            if (document.getElementById("autoplay-helper")) {
-                return
-            }
-            const el = document.createElement("div");
-            el.id = "autoplay-helper";
-            Object.assign(el.style, {
-                position: "fixed",
-                left: "0px",
-                top: "0px",
-                width: "4px",
-                height: "4px",
-                opacity: "0",
-                pointerEvents: "auto",
-                zIndex: "2147483647",
-            });
-
-            el.addEventListener(
-                "mousedown",
-                (e) => {
-                    e.preventDefault();
-                },
-                { passive: false },
-            );
-
-            document.body.appendChild(el);
-        });
-
         await strudelPage.exposeFunction("sendEditorContent", async () => {
             const content = await strudelPage?.evaluate(() => {
                 return window.strudelMirror.code;
